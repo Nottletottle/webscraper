@@ -29,7 +29,6 @@ def log_system_info():
     logging.info("System Information:")
     logging.info(f"Python Version: {sys.version}")
     logging.info(f"Platform: {platform.platform()}")
-    logging.info(f"Chrome Driver Path: {webdriver.chrome.service.Service().path}")
     try:
         chrome_version = (
             subprocess.check_output(["google-chrome", "--version"]).decode().strip()
@@ -48,7 +47,7 @@ def setup_driver():
     chrome_options.add_argument("--disable-gpu")
     chrome_options.add_argument("--no-sandbox")
     chrome_options.add_argument("--disable-dev-shm-usage")
-    chrome_options.add_argument("--lang=en-US")  # Force English locale
+    chrome_options.add_argument("--lang=en-US")
 
     try:
         driver = webdriver.Chrome(options=chrome_options)
@@ -61,17 +60,17 @@ def setup_driver():
 
 def extract_date(text):
     logging.debug(f"Attempting to extract date from: {text}")
-    match = re.search(r"(\d{4})\.(\d{2})\.\d{2}", text)
+    match = re.search(r"(\d{4})", text)
     if match:
-        year, month = match.groups()
-        logging.debug(f"Extracted year: {year}, month: {month}")
-        return year, month
+        year = match.group(1)
+        logging.debug(f"Extracted year: {year}")
+        return year
     logging.warning(f"Could not extract date from text: {text}")
-    return None, None
+    return None
 
 
 def get_download_link(edition_id):
-    url = f"https://www.wbc.poznan.pl/Content/{edition_id}/download/"
+    url = f"https://zbc.ksiaznica.szczecin.pl/dlibra/publication/{edition_id}/content?ref=struct"
     logging.debug(f"Generated download link: {url}")
     return url
 
@@ -109,9 +108,9 @@ def download_with_wget(url, filepath):
         return False
 
 
-def scrape_and_download(url, target_year=None, target_month=None):
+def scrape_and_download(url, target_year=None):
     logging.info(f"Starting scrape_and_download with URL: {url}")
-    logging.info(f"Target year: {target_year}, Target month: {target_month}")
+    logging.info(f"Target year: {target_year}")
 
     base_dir = "downloads"
     if not os.path.exists(base_dir):
@@ -138,14 +137,13 @@ def scrape_and_download(url, target_year=None, target_month=None):
             logging.info("Initial elements found, waiting for page to stabilize.....")
         except TimeoutException as e:
             logging.error(f"Timeout waiting for elements: {str(e)}")
-            logging.debug(f"Page source at timeout: {driver.page_source[:1000]}...")
             raise
 
         page_source = driver.page_source
         logging.debug(f"Page source length: {len(page_source)}")
 
         soup = BeautifulSoup(page_source, "html.parser")
-        items = soup.find_all("div", class_="tab-content__tree-fake-list-item")
+        items = soup.find_all("span", class_="tab-content__tree-fake-list-item")
         logging.info(f"Found {len(items)} items")
 
         downloads = []
@@ -160,7 +158,7 @@ def scrape_and_download(url, target_year=None, target_month=None):
             href = content_link["href"]
             logging.debug(f"Found href: {href}")
 
-            edition_id_match = re.search(r"edition/(\d+)", href)
+            edition_id_match = re.search(r"publication/(\d+)/edition", href)
             if not edition_id_match:
                 logging.warning(f"No edition ID found in href: {href}")
                 continue
@@ -174,23 +172,19 @@ def scrape_and_download(url, target_year=None, target_month=None):
                 continue
 
             title = title_link.text.strip()
-            year, month = extract_date(title)
+            year = extract_date(title)
 
-            logging.debug(f"Item {idx}: Title: {title}, Year: {year}, Month: {month}")
+            logging.debug(f"Item {idx}: Title: {title}, Year: {year}")
 
             if year and (target_year is None or year == target_year):
-                if target_month is None or month == target_month:
-                    downloads.append(
-                        {
-                            "title": title,
-                            "year": year,
-                            "month": month,
-                            "edition_id": edition_id,
-                        }
-                    )
-                    logging.info(f"Added item to downloads: {title}")
-                else:
-                    logging.debug(f"Skipped due to month mismatch: {title}")
+                downloads.append(
+                    {
+                        "title": title,
+                        "year": year,
+                        "edition_id": edition_id,
+                    }
+                )
+                logging.info(f"Added item to downloads: {title}")
             else:
                 logging.debug(f"Skipped due to year mismatch: {title}")
 
@@ -199,23 +193,16 @@ def scrape_and_download(url, target_year=None, target_month=None):
 
         if total_downloads == 0:
             logging.warning("No files matched the criteria for download")
-            logging.debug(f"Target year: {target_year}, Target month: {target_month}")
-            logging.debug("Sample of processed items that didn't match:")
-            for i, item in enumerate(items[:5]):  # Log details of first 5 items
-                title_link = item.find("a", class_="tab-content__tree-link")
-                if title_link:
-                    logging.debug(f"Sample item {i}: {title_link.text.strip()}")
             return []
 
         for i, item in enumerate(downloads, 1):
             year_dir = os.path.join(base_dir, item["year"])
-            month_dir = os.path.join(year_dir, item["month"])
-            if not os.path.exists(month_dir):
-                os.makedirs(month_dir)
-                logging.info(f"Created directory: {month_dir}")
+            if not os.path.exists(year_dir):
+                os.makedirs(year_dir)
+                logging.info(f"Created directory: {year_dir}")
 
             safe_filename = re.sub(r'[<>:"/\\|?*]', "_", item["title"]) + ".pdf"
-            filepath = os.path.join(month_dir, safe_filename)
+            filepath = os.path.join(year_dir, safe_filename)
 
             if os.path.exists(filepath):
                 logging.info(
@@ -249,22 +236,15 @@ def scrape_and_download(url, target_year=None, target_month=None):
 
 if __name__ == "__main__":
     try:
-        print("WBC Poznan Digital Library Scraper")
+        print("ZBC Szczecin Digital Library Scraper")
         print("-" * 50)
 
         log_system_info()
 
         base_url = input("Enter the base URL of the webpage: ")
-        year_input = input("Enter a specific year to download : ").strip()
-        month_input = input(
-            "Enter a specific month (MM) to download(press enter for all months) : "
-        ).strip()
-
-        target_year = year_input if year_input else None
-        target_month = month_input if month_input else None
 
         logging.info("Starting scraping process...")
-        downloads = scrape_and_download(base_url, target_year, target_month)
+        downloads = scrape_and_download(base_url)
 
         if not downloads:
             logging.error("No files were found matching the specified criteria")
