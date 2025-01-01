@@ -152,7 +152,7 @@ def scrape_and_download(url, target_year=None, target_month=None):
         for idx, item in enumerate(items, 1):
             logging.debug(f"Processing item {idx}/{len(items)}")
 
-            content_link = item.find("a", {"aria-label": "Show content"})
+            content_link = item.find("a", {"aria-label": "Pokaż treść"})
             if not content_link:
                 logging.warning(f"No content link found in item {idx}")
                 continue
