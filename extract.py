@@ -6,6 +6,7 @@ import subprocess
 import sys
 import time
 
+import requests
 from bs4 import BeautifulSoup
 from selenium import webdriver
 from selenium.common.exceptions import TimeoutException, WebDriverException
@@ -74,6 +75,39 @@ def get_download_link(edition_id):
     url = f"https://www.wbc.poznan.pl/Content/{edition_id}/download/"
     logging.debug(f"Generated download link: {url}")
     return url
+
+
+def get_file_extension(url):
+    """
+    Determine the file extension from Content-Disposition header
+    Falls back to .pdf if unable to determine
+    """
+    try:
+        response = requests.head(url, allow_redirects=True, timeout=10)
+        content_disposition = response.headers.get("Content-Disposition", "")
+
+        if "filename" in content_disposition:
+            # Extract filename from Content-Disposition header
+            filename_match = re.search(
+                r'filename=(?:"([^"]+)"|([^;]+))', content_disposition
+            )
+            if filename_match:
+                filename = filename_match.group(1) or filename_match.group(2)
+                ext = os.path.splitext(filename)[1]
+                if ext:
+                    logging.debug(
+                        f"Extension determined from Content-Disposition: {ext}"
+                    )
+                    return ext
+
+        logging.warning(
+            f"Could not determine file extension from Content-Disposition, defaulting to .pdf"
+        )
+        return ".pdf"
+
+    except Exception as e:
+        logging.error(f"Error determining file extension: {str(e)}")
+        return ".pdf"
 
 
 def download_with_wget(url, filepath):
@@ -201,7 +235,7 @@ def scrape_and_download(url, target_year=None, target_month=None):
             logging.warning("No files matched the criteria for download")
             logging.debug(f"Target year: {target_year}, Target month: {target_month}")
             logging.debug("Sample of processed items that didn't match:")
-            for i, item in enumerate(items[:5]):  # Log details of first 5 items
+            for i, item in enumerate(items[:5]):
                 title_link = item.find("a", class_="tab-content__tree-link")
                 if title_link:
                     logging.debug(f"Sample item {i}: {title_link.text.strip()}")
@@ -214,7 +248,11 @@ def scrape_and_download(url, target_year=None, target_month=None):
                 os.makedirs(month_dir)
                 logging.info(f"Created directory: {month_dir}")
 
-            safe_filename = re.sub(r'[<>:"/\\|?*]', "_", item["title"]) + ".pdf"
+            download_url = get_download_link(item["edition_id"])
+
+            # Get the file extension before downloading
+            file_extension = get_file_extension(download_url)
+            safe_filename = re.sub(r'[<>:"/\\|?*]', "_", item["title"]) + file_extension
             filepath = os.path.join(month_dir, safe_filename)
 
             if os.path.exists(filepath):
@@ -223,7 +261,6 @@ def scrape_and_download(url, target_year=None, target_month=None):
                 )
                 continue
 
-            download_url = get_download_link(item["edition_id"])
             logging.info(f"\n[{i}/{total_downloads}] Downloading: {item['title']}")
             logging.debug(f"Download URL: {download_url}")
             logging.debug(f"Save path: {filepath}")
