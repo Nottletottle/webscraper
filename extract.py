@@ -5,6 +5,7 @@ import re
 import subprocess
 import sys
 import time
+from urllib.parse import urlparse
 
 import requests
 from bs4 import BeautifulSoup
@@ -62,19 +63,35 @@ def setup_driver():
 
 def extract_date(text):
     logging.debug(f"Attempting to extract date from: {text}")
-    match = re.search(r"(\d{4})\.(\d{2})\.\d{2}", text)
+
+    match = re.search(r"(\d{4})(?:\.(\d{2})\.\d{2})?", text)
     if match:
-        year, month = match.groups()
-        logging.debug(f"Extracted year: {year}, month: {month}")
+        year, month = match.group(1), match.group(2)
+        logging.debug(f"Extracted - Year: {year}, Month: {month or 'None'}")
         return year, month
     logging.warning(f"Could not extract date from text: {text}")
     return None, None
 
 
-def get_download_link(edition_id):
-    url = f"https://www.wbc.poznan.pl/Content/{edition_id}/download/"
-    logging.debug(f"Generated download link: {url}")
-    return url
+def get_base_domain(url):
+    try:
+        parsed = urlparse(url)
+        base_domain = f"{parsed.scheme}://{parsed.netloc}"
+        return base_domain.rstrip("/")
+    except Exception as e:
+        logging.error(f"Error parsing URL {url}: {str(e)}")
+        return None
+
+
+def get_download_link(edition_id, url):
+    base_domain = get_base_domain(url)
+    if not base_domain:
+        logging.error(f"Could not extract base domain from URL: {url}")
+        return None
+
+    download_url = f"{base_domain}/Content/{edition_id}/download/"
+    logging.debug(f"Generated download link: {download_url}")
+    return download_url
 
 
 def get_file_extension(url):
@@ -87,7 +104,6 @@ def get_file_extension(url):
         content_disposition = response.headers.get("Content-Disposition", "")
 
         if "filename" in content_disposition:
-            # Extract filename from Content-Disposition header
             filename_match = re.search(
                 r'filename=(?:"([^"]+)"|([^;]+))', content_disposition
             )
@@ -143,6 +159,18 @@ def download_with_wget(url, filepath):
         return False
 
 
+def get_save_directory(base_dir, year, month):
+    """
+    Determine the appropriate directory to save the file based on date information
+    """
+    if year and month:
+        return os.path.join(base_dir, year, month)
+    elif year:
+        return os.path.join(base_dir, year, "unknown_month")
+    else:
+        return os.path.join(base_dir, "unknown_date")
+
+
 def scrape_and_download(url, target_year=None, target_month=None):
     logging.info(f"Starting scrape_and_download with URL: {url}")
     logging.info(f"Target year: {target_year}, Target month: {target_month}")
@@ -179,7 +207,9 @@ def scrape_and_download(url, target_year=None, target_month=None):
         logging.debug(f"Page source length: {len(page_source)}")
 
         soup = BeautifulSoup(page_source, "html.parser")
-        items = soup.find_all("div", class_="tab-content__tree-fake-list-item")
+        items = soup.find_all(
+            ["div", "span"], class_="tab-content__tree-fake-list-item"
+        )
         logging.info(f"Found {len(items)} items")
 
         downloads = []
@@ -212,48 +242,49 @@ def scrape_and_download(url, target_year=None, target_month=None):
 
             logging.debug(f"Item {idx}: Title: {title}, Year: {year}, Month: {month}")
 
-            if year and (target_year is None or year == target_year):
+            # Modified logic to include items without dates if no target is specified
+            should_download = False
+            if target_year is None and target_month is None:
+                should_download = True
+            elif year is None:
+                should_download = (
+                    False  # Skip undated items if targeting specific dates
+                )
+            elif target_year and year == target_year:
                 if target_month is None or month == target_month:
-                    downloads.append(
-                        {
-                            "title": title,
-                            "year": year,
-                            "month": month,
-                            "edition_id": edition_id,
-                        }
-                    )
-                    logging.info(f"Added item to downloads: {title}")
-                else:
-                    logging.debug(f"Skipped due to month mismatch: {title}")
+                    should_download = True
+
+            if should_download:
+                downloads.append(
+                    {
+                        "title": title,
+                        "year": year,
+                        "month": month,
+                        "edition_id": edition_id,
+                    }
+                )
+                logging.info(f"Added item to downloads: {title}")
             else:
-                logging.debug(f"Skipped due to year mismatch: {title}")
+                logging.debug(f"Skipped item: {title}")
 
         total_downloads = len(downloads)
         logging.info(f"Prepared {total_downloads} files for download")
 
         if total_downloads == 0:
             logging.warning("No files matched the criteria for download")
-            logging.debug(f"Target year: {target_year}, Target month: {target_month}")
-            logging.debug("Sample of processed items that didn't match:")
-            for i, item in enumerate(items[:5]):
-                title_link = item.find("a", class_="tab-content__tree-link")
-                if title_link:
-                    logging.debug(f"Sample item {i}: {title_link.text.strip()}")
             return []
 
         for i, item in enumerate(downloads, 1):
-            year_dir = os.path.join(base_dir, item["year"])
-            month_dir = os.path.join(year_dir, item["month"])
-            if not os.path.exists(month_dir):
-                os.makedirs(month_dir)
-                logging.info(f"Created directory: {month_dir}")
+            # Get appropriate directory
+            save_dir = get_save_directory(base_dir, item["year"], item["month"])
+            if not os.path.exists(save_dir):
+                os.makedirs(save_dir)
+                logging.info(f"Created directory: {save_dir}")
 
-            download_url = get_download_link(item["edition_id"])
-
-            # Get the file extension before downloading
+            download_url = get_download_link(item["edition_id"], url)
             file_extension = get_file_extension(download_url)
             safe_filename = re.sub(r'[<>:"/\\|?*]', "_", item["title"]) + file_extension
-            filepath = os.path.join(month_dir, safe_filename)
+            filepath = os.path.join(save_dir, safe_filename)
 
             if os.path.exists(filepath):
                 logging.info(
@@ -292,9 +323,11 @@ if __name__ == "__main__":
         log_system_info()
 
         base_url = input("Enter the base URL of the webpage: ")
-        year_input = input("Enter a specific year to download : ").strip()
+        year_input = input(
+            "Enter a specific year to download (press enter for all years): "
+        ).strip()
         month_input = input(
-            "Enter a specific month (MM) to download(press enter for all months) : "
+            "Enter a specific month (MM) to download (press enter for all months): "
         ).strip()
 
         target_year = year_input if year_input else None
